@@ -25,15 +25,51 @@ import (
 /*
  * For command line processing of a set of strings
  */
-type stringList []string
-
-func (s *stringList) String() string {
-	return strings.Join(*s, ",")
+type keySpec struct {
+	keyid   string
+	keyfile string
 }
 
-func (s *stringList) Set(val string) error {
-	*s = append(*s, val)
+type keySpecs []keySpec
+
+func (s *keySpecs) String() string {
+	var rets []string
+
+	for _, ks := range *s {
+		this := fmt.Sprintf("File:%s", ks.keyfile)
+		if ks.keyid != "" {
+			this += fmt.Sprintf(" (Key ID: %s)", ks.keyid)
+		}
+
+		rets = append(rets, this)
+	}
+	return strings.Join(rets, ",")
+}
+
+func (s *keySpecs) Set(val string) error {
+	parts := strings.SplitN(val, ":", 2)
+
+	var ks keySpec
+
+	if len(parts) > 1 {
+		ks.keyid = parts[0]
+		ks.keyfile = parts[1]
+	} else {
+		ks.keyfile = parts[0]
+	}
+
+	*s = append(*s, ks)
 	return nil
+}
+
+func Usage() {
+	fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s:\n", os.Args[0])
+	fmt.Fprintf(flag.CommandLine.Output(), "%s <options> <file>...:\n", os.Args[0])
+	flag.PrintDefaults()
+}
+
+func init() {
+	flag.Usage = Usage
 }
 
 /* End string list command line glue */
@@ -43,13 +79,20 @@ type jwks struct {
 }
 
 type args struct {
-	files stringList
+	files keySpecs
 }
 
 func parseCmdLine() (args args, err error) {
-	flag.Var(&args.files, "f", "Certificate or key file (may use multiple times)")
+	flag.Var(&args.files, "k", "keyid:cert, used to override a Key ID (may use multiple times)")
 
 	err = flag.CommandLine.Parse(os.Args[1:])
+	if err != nil {
+		return
+	}
+
+	for _, s := range flag.Args() {
+		args.files = append(args.files, keySpec{keyfile: s})
+	}
 
 	if len(args.files) == 0 {
 		return args, fmt.Errorf("Must specify one or more cert/key files")
@@ -59,8 +102,8 @@ func parseCmdLine() (args args, err error) {
 
 // Parse a file containing one or more X509 certs or keys, returning
 // the JWT representations
-func parseFile(file string) (keys []jwk.Key, err error) {
-	keyData, err := ioutil.ReadFile(file)
+func parseFile(file keySpec) (keys []jwk.Key, err error) {
+	keyData, err := ioutil.ReadFile(file.keyfile)
 	if err != nil {
 		return
 	}
@@ -134,15 +177,19 @@ func parseFile(file string) (keys []jwk.Key, err error) {
 		}
 
 		if key != nil {
-			// Default the key ID to the key thumbprint
-			if key.KeyID() == "" {
-				sum, err := key.Thumbprint(crypto.SHA1)
-				if err != nil {
-					return nil, err
-				}
-				fp := base64.RawURLEncoding.EncodeToString(sum[:])
+			if file.keyid == "" {
+				// Default the key ID to the key thumbprint
+				if key.KeyID() == "" {
+					sum, err := key.Thumbprint(crypto.SHA1)
+					if err != nil {
+						return nil, err
+					}
+					fp := base64.RawURLEncoding.EncodeToString(sum[:])
 
-				key.Set(jwk.KeyIDKey, fp)
+					key.Set(jwk.KeyIDKey, fp)
+				}
+			} else {
+				key.Set(jwk.KeyIDKey, file.keyid)
 			}
 			keys = append(keys, key)
 		}
